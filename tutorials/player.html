@@ -97,9 +97,7 @@ Here is a simple page which demonstrates basic DASH playback:
   &lt;script&gt;
     function initPlayer() {
       // Install polyfills.
-      shaka.polyfill.Fullscreen.install();
-      shaka.polyfill.MediaKeys.install();
-      shaka.polyfill.VideoPlaybackQuality.install();
+      shaka.polyfill.installAll();
 
       // Find the video element.
       var video = document.getElementById('video');
@@ -158,9 +156,7 @@ the {@link http://goo.gl/McU4Rh autoplay attribute} on the video tag.
   &lt;script&gt;
     function initPlayer() {
       // Install polyfills.
-      shaka.polyfill.Fullscreen.install();
-      shaka.polyfill.MediaKeys.install();
-      shaka.polyfill.VideoPlaybackQuality.install();
+      shaka.polyfill.installAll();
 
       // Find the video element.
       var video = document.getElementById('video');
@@ -216,9 +212,7 @@ is loaded.  You can execute any arbitrary code when load completes.
   &lt;script&gt;
     function initPlayer() {
       // Install polyfills.
-      shaka.polyfill.Fullscreen.install();
-      shaka.polyfill.MediaKeys.install();
-      shaka.polyfill.VideoPlaybackQuality.install();
+      shaka.polyfill.installAll();
 
       // Find the video element.
       var video = document.getElementById('video');
@@ -257,7 +251,7 @@ is loaded.  You can execute any arbitrary code when load completes.
 <span class="newCode">          text += ' ' + (track.bandwidth / 1024).toFixed(0) + ' kbits/s';</span>
 <span class="newCode"></span>
 <span class="newCode">          var li = document.createElement('li');</span>
-<span class="newCode">          li.innerText = text;</span>
+<span class="newCode">          li.textContent = text;</span>
 <span class="newCode">          ul.appendChild(li);</span>
 <span class="newCode">        }</span>
 <span class="newCode"></span>
@@ -270,7 +264,7 @@ is loaded.  You can execute any arbitrary code when load completes.
 <span class="newCode">        }</span>
 <span class="newCode"></span>
 <span class="newCode">        // Begin playback, since autoplay is not enabled on the video tag.</span>
-<span class="newCode">        player.play();</span>
+<span class="newCode">        video.play();</span>
 <span class="newCode">      });</span>
     }
     document.addEventListener('DOMContentLoaded', initPlayer);
@@ -287,6 +281,13 @@ If this information is important to you, please use autoplay.
 <p>
 (The use of the autoplay attribute and the execution of asynchronous code after
 load are not mutually exclusive.)
+</p>
+
+<p>
+(NOTE: Autoplay is disabled on some mobile browsers, including Chrome. Both the
+autoplay attribute and programmatic calling of video.play() from outside a user
+interaction event are disabled.  This is something the library cannot fix.  See
+<a href="http://crbug.com/159336">http://crbug.com/159336</a> for background.)
 </p>
 
 
@@ -339,9 +340,7 @@ used to enable encrypted content:
   &lt;script&gt;
     function initPlayer() {
       // Install polyfills.
-      shaka.polyfill.Fullscreen.install();
-      shaka.polyfill.MediaKeys.install();
-      shaka.polyfill.VideoPlaybackQuality.install();
+      shaka.polyfill.installAll();
 
       // Find the video element.
       var video = document.getElementById('video');
@@ -389,7 +388,6 @@ used to enable encrypted content:
 <span class="newCode">        var keySystem = 'com.widevine.alpha';</span>
 
 <span class="newCode">        return new shaka.player.DrmSchemeInfo(keySystem,</span>
-<span class="newCode">                                              true /* suppressMultipleEvents */,</span>
 <span class="newCode">                                              licenseServerUrl,</span>
 <span class="newCode">                                              false /* withCredentials */,</span>
 <span class="newCode">                                              null /* initData */,</span>
@@ -569,9 +567,7 @@ video will play back in an overlay on top of the thumbnails.
 <span class="newCode"></span>
     function initPlayer() {
       // Install polyfills.
-      shaka.polyfill.Fullscreen.install();
-      shaka.polyfill.MediaKeys.install();
-      shaka.polyfill.VideoPlaybackQuality.install();
+      shaka.polyfill.installAll();
 
 <span class="newCode">      // Get the video element.</span>
 <span class="newCode">      video = document.getElementById('video');</span>
@@ -639,7 +635,6 @@ video will play back in an overlay on top of the thumbnails.
         var keySystem = 'com.widevine.alpha';
 
         return new shaka.player.DrmSchemeInfo(keySystem,
-                                              true /* suppressMultipleEvents */,
                                               licenseServerUrl,
                                               false /* withCredentials */,
                                               null /* initData */,
@@ -843,9 +838,7 @@ is being played. It also shows an error dialog if/when error events occur.
 
     function initPlayer() {
       // Install polyfills.
-      shaka.polyfill.Fullscreen.install();
-      shaka.polyfill.MediaKeys.install();
-      shaka.polyfill.VideoPlaybackQuality.install();
+      shaka.polyfill.installAll();
 
 <span class="newCode">      // Get important elements.</span>
       video = document.getElementById('video');
@@ -966,7 +959,6 @@ is being played. It also shows an error dialog if/when error events occur.
         var keySystem = 'com.widevine.alpha';
 
         return new shaka.player.DrmSchemeInfo(keySystem,
-                                              true /* suppressMultipleEvents */,
                                               licenseServerUrl,
                                               false /* withCredentials */,
                                               null /* initData */,

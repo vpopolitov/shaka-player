@@ -18,9 +18,7 @@
   <script>
     function initPlayer() {
       // Install polyfills.
-      shaka.polyfill.Fullscreen.install();
-      shaka.polyfill.MediaKeys.install();
-      shaka.polyfill.VideoPlaybackQuality.install();
+      shaka.polyfill.installAll();
 
       // Find the video element.
       var video = document.getElementById('video');
@@ -59,7 +57,7 @@
           text += ' ' + (track.bandwidth / 1024).toFixed(0) + ' kbits/s';
 
           var li = document.createElement('li');
-          li.innerText = text;
+          li.textContent = text;
           ul.appendChild(li);
         }
 
@@ -72,7 +70,7 @@
         }
 
         // Begin playback, since autoplay is not enabled on the video tag.
-        player.play();
+        video.play();
       });
     }
     document.addEventListener('DOMContentLoaded', initPlayer);

@@ -38,6 +38,22 @@ app.videoResDebug_ = null;
 
 
 /**
+ * The buffered ahead debug element owned by the app.
+ *
+ * @private {Element}
+ */
+app.bufferedAheadDebug_ = null;
+
+
+/**
+ * The buffered behind debug element owned by the app.
+ *
+ * @private {Element}
+ */
+app.bufferedBehindDebug_ = null;
+
+
+/**
  * True if the aspect ratio has been set for this playback.
  *
  * @private {boolean}
@@ -80,11 +96,32 @@ app.offlineStreams_ = [];
 
 
 /**
+ * @type {boolean} The state of adaptation before video cycling was started.
+ * @private
+ */
+app.originalAdaptationEnabled_ = true;
+
+
+/**
+ * @type {?number} The lastest audio cycle interval set.
+ * @private
+ */
+app.audioCycleInterval_ = null;
+
+
+/**
+ * @type {?number} The lastest video cycle interval set.
+ * @private
+ */
+app.videoCycleInterval_ = null;
+
+
+/**
  * Initializes the application.
  */
 app.init = function() {
   // Display the version number.
-  document.getElementById('version').innerText = shaka.player.Player.version;
+  document.getElementById('version').textContent = shaka.player.Player.version;
 
   // Set default values.
   document.getElementById('forcePrefixed').checked = false;
@@ -101,7 +138,9 @@ app.init = function() {
   app.video_ =
       /** @type {!HTMLVideoElement} */ (document.getElementById('video'));
   app.videoResDebug_ = document.getElementById('videoResDebug');
-  window.setInterval(app.updateVideoSize_, 50);
+  app.bufferedAheadDebug_ = document.getElementById('bufferedAheadDebug');
+  app.bufferedBehindDebug_ = document.getElementById('bufferedBehindDebug');
+  window.setInterval(app.updateDebugInfo_, 50);
 
   var fields = location.search.split('?').pop();
   fields = fields ? fields.split(';') : [];
@@ -137,12 +176,8 @@ app.init = function() {
   }
 
   // Retrieve and verify list of offline streams
-  var storage = new shaka.util.ContentDatabase(null);
-  storage.setUpDatabase().then(
-      function() {
-        return storage.retrieveGroupIds();
-      }
-  ).then(
+  shaka.player.OfflineVideoSource.retrieveGroupIds().then(
+      /** @param {!Array.<number>} groupIds */
       function(groupIds) {
         var groups = app.getOfflineGroups_();
         for (var i in groupIds) {
@@ -154,20 +189,20 @@ app.init = function() {
           app.addOfflineStream_(value, id);
         }
       }
-  ).then(
-      function() {
-        storage.closeDatabaseConnection();
-      }
   ).catch(
       function(e) {
-        storage.closeDatabaseConnection();
-        console.error('Error retrieving stored data', e);
+        console.error('Failed to retrieve group IDs', e);
       }
   );
 
   app.onMpdChange();
 
   playerControls.init(app.video_);
+
+  if ('asset' in params) {
+    document.getElementById('manifestUrlInput').value = params['asset'];
+    app.onMpdCustom();
+  }
 
   if ('dash' in params) {
     document.getElementById('streamTypeList').value = 'dash';
@@ -179,11 +214,17 @@ app.init = function() {
   app.onStreamTypeChange();
 
   if ('cycleVideo' in params) {
+    document.getElementById('cycleVideo').checked = true;
     app.cycleVideo();
   }
   if ('cycleAudio' in params) {
+    document.getElementById('cycleAudio').checked = true;
     app.cycleAudio();
   }
+  app.video_.addEventListener('ended', function() {
+    app.resetCycleState_('videoTracks', 'cycleVideo', true);
+    app.resetCycleState_('audioTracks', 'cycleAudio', false);
+  });
 };
 
 
@@ -273,6 +314,18 @@ app.onVideoChange = function(opt_immediate) {
 
 
 /**
+ * Called when trick play is enabled or disabled.
+ */
+app.onTrickPlayChange = function() {
+  var enable = document.getElementById('trickPlayEnabled').checked;
+  playerControls.enableTrickPlayButtons(enable);
+  if (!enable && app.player_) {
+    app.player_.setPlaybackRate(1.0);
+  }
+};
+
+
+/**
  * Called when adaptation is enabled or disabled.
  */
 app.onAdaptationChange = function() {
@@ -309,7 +362,7 @@ app.onTextChange = function() {
 app.cycleAudio = function() {
   app.cycleTracks_('cycleAudio', 'audioTracks', 3, function() {
     app.onAudioChange();
-  }, function() {});
+  }, false);
 };
 
 
@@ -317,63 +370,76 @@ app.cycleAudio = function() {
  * A demo function to cycle through video tracks.
  */
 app.cycleVideo = function() {
-  // Disable adaptation.
-  var adaptationEnabled = document.getElementById('adaptationEnabled');
-  var originalAdaptationEnabled = adaptationEnabled.checked;
-  adaptationEnabled.checked = false;
-  adaptationEnabled.disabled = true;
-  app.onAdaptationChange();
+  if (document.getElementById('cycleVideo').checked) {
+    // Disable adaptation.
+    var adaptationEnabled = document.getElementById('adaptationEnabled');
+    app.originalAdaptationEnabled_ = adaptationEnabled.checked;
+    adaptationEnabled.checked = false;
+    adaptationEnabled.disabled = true;
+    app.onAdaptationChange();
+  }
 
   app.cycleTracks_('cycleVideo', 'videoTracks', 6, function() {
     // Select video track with immediate == false.  This switches in the same
     // smooth way as the AbrManager.
     app.onVideoChange(false);
-  }, function() {
-    // Re-enable adaptation.
-    adaptationEnabled.disabled = false;
-    adaptationEnabled.checked = originalAdaptationEnabled;
-    app.onAdaptationChange();
-  });
+  }, true);
 };
 
 
 /**
  * Common functionality for cycling through tracks.
- * @param {string} cycleButtonId
+ * @param {string} checkboxId
  * @param {string} tracksId
  * @param {number} seconds
  * @param {function()} onSelect
- * @param {function()} onComplete
+ * @param {boolean} isVideo
  * @private
  */
-app.cycleTracks_ =
-    function(cycleButtonId, tracksId, seconds, onSelect, onComplete) {
-  // Indicate that we are busy cycling.
-  var cycleButton = document.getElementById(cycleButtonId);
-  var originalCycleText = cycleButton.textContent;
-  cycleButton.textContent = 'Cycling...';
-  cycleButton.disabled = true;
-  // Prevent the user from changing the settings while we are cycling.
+app.cycleTracks_ = function(checkboxId, tracksId, seconds, onSelect, isVideo) {
   var tracks = document.getElementById(tracksId);
-  tracks.disabled = true;
+  if (document.getElementById(checkboxId).checked) {
+    // Prevent the user from changing the settings while we are cycling.
+    tracks.disabled = true;
 
-  var intervalId = window.setInterval(function() {
-    // On EOF, the video goes into a paused state.
-    if (app.video_.paused) {
-      window.clearInterval(intervalId);
-      // Allow the user to change the settings again.
-      tracks.disabled = false;
-      cycleButton.disabled = false;
-      cycleButton.textContent = originalCycleText;
-      onComplete();
-      return;
-    }
+    var intervalId = window.setInterval(function() {
+      var option = tracks.selectedOptions[0];
+      if (option) {
+        option = option.nextElementSibling || tracks.firstElementChild;
+        tracks.value = option.value;
+        onSelect();
+      } else {
+        app.resetCycleState_(tracksId, checkboxId, isVideo);
+      }
+    }, seconds * 1000);
 
-    var option = tracks.selectedOptions[0];
-    option = option.nextElementSibling || tracks.firstElementChild;
-    tracks.value = option.value;
-    onSelect();
-  }, seconds * 1000);
+    isVideo ? app.videoCycleInterval_ = intervalId :
+        app.audioCycleInterval_ = intervalId;
+  } else {
+    app.resetCycleState_(tracksId, checkboxId, isVideo);
+  }
+};
+
+
+/**
+ * Resets the state of a cycle checkbox.
+ * @param {string} tracksId
+ * @param {string} checkboxId
+ * @param {boolean} isVideo
+ * @private
+ */
+app.resetCycleState_ = function(tracksId, checkboxId, isVideo) {
+  var intervalId = isVideo ? app.videoCycleInterval_ : app.audioCycleInterval_;
+  window.clearInterval(intervalId);
+  document.getElementById(tracksId).disabled = false;
+  document.getElementById(checkboxId).checked = false;
+  if (isVideo) {
+    // Re-enable adaptation.
+    var adaptationEnabled = document.getElementById('adaptationEnabled');
+    adaptationEnabled.disabled = false;
+    adaptationEnabled.checked = app.originalAdaptationEnabled_;
+    app.onAdaptationChange();
+  }
 };
 
 
@@ -388,7 +454,7 @@ app.deleteStream = function() {
 
   var deleteButton = document.getElementById('deleteButton');
   deleteButton.disabled = true;
-  deleteButton.innerText = 'Deleting stream...';
+  deleteButton.textContent = 'Deleting stream...';
 
   var offlineList = document.getElementById('offlineStreamList');
   var groupId = parseInt(offlineList.value, 10);
@@ -396,7 +462,9 @@ app.deleteStream = function() {
   console.assert(app.estimator_);
   var estimator = /** @type {!shaka.util.IBandwidthEstimator} */(
       app.estimator_);
-  var offlineSource = new shaka.player.OfflineVideoSource(groupId, estimator);
+  var abrManager = new shaka.media.SimpleAbrManager();
+  var offlineSource = new shaka.player.OfflineVideoSource(
+      groupId, estimator, abrManager);
   offlineSource.deleteGroup().then(
       function() {
         var deleted = app.offlineStreams_.indexOf(text);
@@ -405,14 +473,15 @@ app.deleteStream = function() {
         var groups = app.getOfflineGroups_();
         delete groups[groupId];
         app.setOfflineGroups_(groups);
-        deleteButton.innerText = 'Delete stream from storage';
+        app.removeOfflineStream_(groupId);
+        deleteButton.textContent = 'Delete stream from storage';
         app.onStreamTypeChange();
         app.onMpdChange();
       }
   ).catch(
       function(e) {
         console.error('Error deleting stream', e);
-        deleteButton.innerText = 'Delete stream from storage';
+        deleteButton.textContent = 'Delete stream from storage';
       });
 };
 
@@ -433,7 +502,10 @@ app.storeStream = function() {
   console.assert(app.estimator_);
   var estimator = /** @type {!shaka.util.IBandwidthEstimator} */(
       app.estimator_);
-  var offlineSource = new shaka.player.OfflineVideoSource(null, estimator);
+  var abrManager = new shaka.media.SimpleAbrManager();
+  var offlineSource = new shaka.player.OfflineVideoSource(
+      null, estimator, abrManager);
+  offlineSource.addEventListener('progress', app.progressEventHandler_);
   offlineSource.store(
       mediaUrl, preferredLanguage, app.interpretContentProtection_,
       app.chooseOfflineTracks_.bind(null, offlineSource)
@@ -451,6 +523,16 @@ app.storeStream = function() {
         console.error('Error storing stream', e);
         app.updateStoreButton_(false, 'Store stream offline');
       });
+};
+
+
+/**
+ * Event handler for offline storage progress events.
+ * @param {!Event} e
+ * @private
+ */
+app.progressEventHandler_ = function(e) {
+  app.updateStoreButton_(true, e.detail.toFixed(2) + ' percent stored');
 };
 
 
@@ -491,7 +573,7 @@ app.setOfflineGroups_ = function(groups) {
 app.updateStoreButton_ = function(disabled, text) {
   var storeButton = document.getElementById('storeButton');
   storeButton.disabled = disabled;
-  storeButton.innerText = text;
+  storeButton.textContent = text;
 };
 
 
@@ -509,7 +591,7 @@ app.switchToOfflineStream_ = function(groupId) {
 
 
 /**
- * Stores an offline streams information to the app.
+ * Add an item to the list of offline streams in the test app UI.
  * @param {string} text The text associated with this stream.
  * @param {number} groupId The id assigned to this stream by storage.
  * @private
@@ -520,6 +602,23 @@ app.addOfflineStream_ = function(text, groupId) {
   item.textContent = text;
   item.value = groupId;
   document.getElementById('offlineStreamList').appendChild(item);
+};
+
+
+/**
+ * Remove an item from the list of offline streams in the test app UI.
+ * @param {number} groupId The id assigned to this stream by storage.
+ * @private
+ */
+app.removeOfflineStream_ = function(groupId) {
+  var list = document.getElementById('offlineStreamList');
+  var options = list.options;
+  for (var i = 0; i < options.length; ++i) {
+    if (options[i].value == groupId) {
+      list.removeChild(options[i]);
+      return;
+    }
+  }
 };
 
 
@@ -554,7 +653,10 @@ app.loadHttpStream = function() {
   var drmSchemeInfo = null;
   if (keySystem) {
     drmSchemeInfo = new shaka.player.DrmSchemeInfo(
-        keySystem, true, licenseServerUrl, false, null, null);
+        keySystem,
+        licenseServerUrl,
+        false /* withCredentials */,
+        null /* initData */);
   }
 
   app.load_(new shaka.player.HttpVideoSource(mediaUrl, subtitlesUrl,
@@ -582,11 +684,13 @@ app.loadDashStream = function() {
 
   var estimator = /** @type {!shaka.util.IBandwidthEstimator} */(
       app.estimator_);
+  var abrManager = new shaka.media.SimpleAbrManager();
   app.load_(
       new shaka.player.DashVideoSource(
           mediaUrl,
           app.interpretContentProtection_,
-          estimator));
+          estimator,
+          abrManager));
 };
 
 
@@ -603,7 +707,9 @@ app.loadOfflineStream = function() {
   console.assert(app.estimator_);
   var estimator = /** @type {!shaka.util.IBandwidthEstimator} */(
       app.estimator_);
-  app.load_(new shaka.player.OfflineVideoSource(groupId, estimator));
+  var abrManager = new shaka.media.SimpleAbrManager();
+  app.load_(new shaka.player.OfflineVideoSource(
+      groupId, estimator, abrManager));
 };
 
 
@@ -706,10 +812,22 @@ app.displayMetadata_ = function() {
 
 
 /**
- * Update video resolution information.
+ * Update the debug information.
  * @private
  */
-app.updateVideoSize_ = function() {
+app.updateDebugInfo_ = function() {
+  app.updateVideoResDebug_();
+  app.updateBufferDebug_();
+};
+
+
+/**
+ * Update the video resolution information.
+ * @private
+ */
+app.updateVideoResDebug_ = function() {
+  console.assert(app.videoResDebug_);
+
   if (app.aspectRatioSet_ == false) {
     var aspect = app.video_.videoWidth / app.video_.videoHeight;
     if (aspect) {
@@ -730,8 +848,33 @@ app.updateVideoSize_ = function() {
     }
   }
 
-  app.videoResDebug_.innerText =
+  app.videoResDebug_.textContent =
       app.video_.videoWidth + ' x ' + app.video_.videoHeight;
+};
+
+
+/**
+ * Update the buffer information.
+ * @private
+ */
+app.updateBufferDebug_ = function() {
+  console.assert(app.bufferedAheadDebug_ && app.bufferedBehindDebug_);
+
+  var currentTime = app.video_.currentTime;
+  var buffered = app.video_.buffered;
+  var ahead = 0;
+  var behind = 0;
+
+  for (var i = 0; i < buffered.length; ++i) {
+    if (buffered.start(i) <= currentTime && buffered.end(i) >= currentTime) {
+      ahead = buffered.end(i) - currentTime;
+      behind = currentTime - buffered.start(i);
+      break;
+    }
+  }
+
+  app.bufferedAheadDebug_.textContent = Math.round(ahead) + ' seconds';
+  app.bufferedBehindDebug_.textContent = Math.round(behind) + ' seconds';
 };
 
 
@@ -757,9 +900,7 @@ app.installPolyfills_ = function() {
     Navigator.prototype['requestMediaKeySystemAccess'] = null;
   }
 
-  shaka.polyfill.Fullscreen.install();
-  shaka.polyfill.MediaKeys.install();
-  shaka.polyfill.VideoPlaybackQuality.install();
+  shaka.polyfill.installAll();
 
   app.polyfillsInstalled_ = true;
 };
@@ -785,9 +926,10 @@ app.initPlayer_ = function() {
   app.player_.addEventListener('bufferingEnd',
       playerControls.onBuffering.bind(null, false));
   app.player_.addEventListener('seekrangechanged',
-      playerControls.updateTimeAndSeekRange);
+      playerControls.onSeekRangeChanged);
 
   app.estimator_ = new shaka.util.EWMABandwidthEstimator();
+  playerControls.setPlayer(app.player_);
 
   // Load the adaptation setting.
   app.onAdaptationChange();
@@ -814,20 +956,35 @@ app.onPlayerError_ = function(event) {
 app.interpretContentProtection_ = function(contentProtection) {
   var Uint8ArrayUtils = shaka.util.Uint8ArrayUtils;
 
-  var override = document.getElementById('wvLicenseServerUrlInput');
-  if (override.value) {
-    // The user is using the test app's UI to override the MPD.
-    // This is useful to test external MPDs when no mapping is known in
-    // advance.
-    return new shaka.player.DrmSchemeInfo(
-        'com.widevine.alpha', false, override.value, false, null, null);
+  var initDataOverride = null;
+  if (contentProtection.pssh && contentProtection.pssh.psshBox) {
+    // Override the init data with the PSSH from the manifest.
+    initDataOverride = {
+      initData: contentProtection.pssh.psshBox,
+      initDataType: 'cenc'
+    };
+    console.info('Found overridden PSSH with system IDs:',
+                 contentProtection.pssh.parsedPssh.systemIds);
   }
+
+  var wvLicenseServerUrlOverride =
+      document.getElementById('wvLicenseServerUrlInput').value || null;
 
   if (contentProtection.schemeIdUri == 'com.youtube.clearkey') {
     // This is the scheme used by YouTube's MediaSource demo.
-    var child = contentProtection.children[0];
-    var keyid = Uint8ArrayUtils.fromHex(child.getAttribute('keyid'));
-    var key = Uint8ArrayUtils.fromHex(child.getAttribute('key'));
+    var license;
+    for (var i = 0; i < contentProtection.children.length; ++i) {
+      var child = contentProtection.children[i];
+      if (child.nodeName == 'ytdrm:License') {
+        license = child;
+        break;
+      }
+    }
+    if (!license) {
+      return null;
+    }
+    var keyid = Uint8ArrayUtils.fromHex(license.getAttribute('keyid'));
+    var key = Uint8ArrayUtils.fromHex(license.getAttribute('key'));
     var keyObj = {
       kty: 'oct',
       alg: 'A128KW',
@@ -843,18 +1000,10 @@ app.interpretContentProtection_ = function(contentProtection) {
     var licenseServerUrl = 'data:application/json;base64,' +
         window.btoa(license);
     return new shaka.player.DrmSchemeInfo(
-        'org.w3.clearkey', false, licenseServerUrl, false, initData, null);
-  }
-
-  var initDataOverride = null;
-  if (contentProtection.pssh && contentProtection.pssh.psshBox) {
-    // Override the init data with the PSSH from the manifest.
-    initDataOverride = {
-      initData: contentProtection.pssh.psshBox,
-      initDataType: 'cenc'
-    };
-    console.info('Found overridden PSSH with system IDs:',
-                 contentProtection.pssh.parsedPssh.systemIds);
+        'org.w3.clearkey',
+        licenseServerUrl,
+        false /* withCredentials */,
+        initData);
   }
 
   if (contentProtection.schemeIdUri == 'http://youtube.com/drm/2012/10/10') {
@@ -862,14 +1011,17 @@ app.interpretContentProtection_ = function(contentProtection) {
     var licenseServerUrl = null;
     for (var i = 0; i < contentProtection.children.length; ++i) {
       var child = contentProtection.children[i];
-      if (child.getAttribute('type') == 'widevine') {
-        licenseServerUrl = child.firstChild.nodeValue;
+      if (child.nodeName == 'yt:SystemURL' &&
+          child.getAttribute('type') == 'widevine') {
+        licenseServerUrl = wvLicenseServerUrlOverride || child.textContent;
         break;
       }
     }
     if (licenseServerUrl) {
       return new shaka.player.DrmSchemeInfo(
-          'com.widevine.alpha', false, licenseServerUrl, false,
+          'com.widevine.alpha',
+          licenseServerUrl,
+          false /* withCredentials */,
           initDataOverride,
           app.postProcessYouTubeLicenseResponse_);
     }
@@ -878,10 +1030,13 @@ app.interpretContentProtection_ = function(contentProtection) {
   if (contentProtection.schemeIdUri ==
       'urn:uuid:edef8ba9-79d6-4ace-a3c8-27dcd51d21ed') {
     // This is the UUID which represents Widevine in the edash-packager.
-    var licenseServerUrl = '//widevine-proxy.appspot.com/proxy';
+    var licenseServerUrl =
+        wvLicenseServerUrlOverride || '//widevine-proxy.appspot.com/proxy';
     return new shaka.player.DrmSchemeInfo(
-        'com.widevine.alpha', false, licenseServerUrl, false, initDataOverride,
-        null);
+        'com.widevine.alpha',
+        licenseServerUrl,
+        false /* withCredentials */,
+        initDataOverride);
   }
 
   if (contentProtection.schemeIdUri == 'urn:mpeg:dash:mp4protection:2011') {

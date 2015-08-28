@@ -140,9 +140,7 @@
 
     function initPlayer() {
       // Install polyfills.
-      shaka.polyfill.Fullscreen.install();
-      shaka.polyfill.MediaKeys.install();
-      shaka.polyfill.VideoPlaybackQuality.install();
+      shaka.polyfill.installAll();
 
       // Get the video element.
       video = document.getElementById('video');
@@ -210,7 +208,6 @@
         var keySystem = 'com.widevine.alpha';
 
         return new shaka.player.DrmSchemeInfo(keySystem,
-                                              true /* suppressMultipleEvents */,
                                               licenseServerUrl,
                                               false /* withCredentials */,
                                               null /* initData */,
